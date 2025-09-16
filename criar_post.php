@@ -1,9 +1,9 @@
 <?php
 session_start();
-require_once "../includes/conexao.php";
+require_once "conexao.php";
 
 if (!isset($_SESSION['usuario_id'])) {
-    header("Location: ../login.php");
+    header("Location: login.php");
     exit;
 }
 
@@ -20,7 +20,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
     $stmt = $conexao->prepare("INSERT INTO posts (usuario_id, conteudo, imagem) VALUES (?, ?, ?)");
     $stmt->execute([$_SESSION['usuario_id'], $conteudo, $imagem]);
-    header("Location: ../index.php");
+    header("Location: index.php");
     exit;
 }
 ?>
