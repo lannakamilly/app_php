@@ -27,7 +27,7 @@ if (isset($_POST['entrar'])) {
             session_start();
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user_nome'] = $user['nome'];
-            header("Location: feed.php"); // Página principal após login
+            header("Location: feed.php"); 
             exit;
         } else {
             $mensagem = "Senha incorreta!";
