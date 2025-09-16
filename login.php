@@ -4,9 +4,9 @@ $host = "localhost";
 $db   = "conectatech";
 $user = "root";
 $pass = "";
-$conn = new mysqli($host, $user, $pass, $db);
-if ($conn->connect_error) {
-    die("Conexão falhou: " . $conn->connect_error);
+$conexao = new mysqli($host, $user, $pass, $db);
+if ($conexao->connect_error) {
+    die("Conexão falhou: " . $conexao->connect_error);
 }
 
 // Login
@@ -16,7 +16,7 @@ if (isset($_POST['entrar'])) {
     $senha = $_POST['senha'];
 
     $sql = "SELECT * FROM users WHERE email = ?";
-    $stmt = $conn->prepare($sql);
+    $stmt = $conexao->prepare($sql);
     $stmt->bind_param("s", $email);
     $stmt->execute();
     $resultado = $stmt->get_result();
@@ -27,11 +27,7 @@ if (isset($_POST['entrar'])) {
             session_start();
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user_nome'] = $user['nome'];
-<<<<<<< HEAD
             header("Location: feed.php"); 
-=======
-            header("Location: criar_post.php"); // Página principal após login
->>>>>>> ecdeef637b1deab8ccac4f496e7f18b978108854
             exit;
         } else {
             $mensagem = "Senha incorreta!";
