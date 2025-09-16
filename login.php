@@ -25,8 +25,8 @@ if (isset($_POST['entrar'])) {
         $user = $resultado->fetch_assoc();
         if (password_verify($senha, $user['senha'])) {
             session_start();
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['user_nome'] = $user['nome'];
+            $_SESSION['usuario_id'] = $user['id'];
+            $_SESSION['usuario_nome'] = $user['nome'];
             header("Location: feed.php"); 
             exit;
         } else {
