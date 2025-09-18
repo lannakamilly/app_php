@@ -1,398 +1,543 @@
 <?php
-// Conexão com banco de dados (ajuste conforme suas credenciais)
-$host = "localhost";
-$dbname = "conectatech";
-$username = "root";
-$password = "";
+session_start();
+require_once "conexao.php";
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    die("Erro na conexão: " . $e->getMessage());
+if (!isset($_SESSION['usuario_id'])) {
+    header("Location: login.php");
+    exit;
 }
 
-// Simulação de usuário logado (em um sistema real, use $_SESSION['user_id'])
-$user_id = 1;
+$usuario_id = $_SESSION['usuario_id'];
 
-// Consulta ao banco
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");
-$stmt->execute(['id' => $user_id]);
-$user = $stmt->fetch(PDO::FETCH_ASSOC);
+// Atualizar perfil
+if (isset($_POST['editar'])) {
+    $nome = $_POST['nome'];
+    $bio = $_POST['bio'];
 
-// Se não encontrou usuário
-if (!$user) {
-    die("Usuário não encontrado.");
+    // Upload foto de perfil
+    if (isset($_FILES['foto_perfil']) && $_FILES['foto_perfil']['error'] === UPLOAD_ERR_OK) {
+        $ext = pathinfo($_FILES['foto_perfil']['name'], PATHINFO_EXTENSION);
+        $nomeArquivo = uniqid() . '.' . $ext;
+        $destino = 'uploads/perfis/' . $nomeArquivo;
+
+        if (!is_dir('uploads/perfis')) {
+            mkdir('uploads/perfis', 0755, true);
+        }
+
+        if (move_uploaded_file($_FILES['foto_perfil']['tmp_name'], $destino)) {
+            // Atualizar foto no banco
+            $stmt = $conexao->prepare("UPDATE users SET foto_perfil = ? WHERE id = ?");
+            $stmt->execute([$nomeArquivo, $usuario_id]);
+        }
+    }
+
+    $stmt = $conexao->prepare("UPDATE users SET nome=?, bio=? WHERE id=?");
+    $stmt->execute([$nome, $bio, $usuario_id]);
+
+    header("Location: perfil.php");
+    exit;
 }
 
-// Se não tiver foto, define uma padrão
-if (empty($user['foto_perfil'])) {
-    $user['foto_perfil'] = "uploads/default.png";
+// Buscar dados do usuário logado
+$stmt = $conexao->prepare("SELECT * FROM users WHERE id=?");
+$stmt->execute([$usuario_id]);
+$usuario = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// Buscar posts do usuário
+$stmt = $conexao->prepare("SELECT * FROM posts WHERE usuario_id = ? ORDER BY data_postagem DESC");
+$stmt->execute([$usuario_id]);
+$posts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Listar amigos
+$stmt = $conexao->prepare("
+    SELECT u.* FROM users u
+    JOIN amizades a ON 
+        (a.usuario_id = ? AND a.amigo_id = u.id AND a.status='aceito')
+        OR (a.amigo_id = ? AND a.usuario_id = u.id AND a.status='aceito')
+");
+$stmt->execute([$usuario_id, $usuario_id]);
+$amigos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Pesquisa de usuários
+$pesquisa = "";
+$resultados = [];
+if (isset($_GET['search'])) {
+    $pesquisa = $_GET['search'];
+    $stmt = $conexao->prepare("SELECT * FROM users WHERE nome LIKE ? AND id!=?");
+    $stmt->execute(["%$pesquisa%", $usuario_id]);
+    $resultados = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
-?><!DOCTYPE html>
-<html lang="pt-BR">
+
+// Enviar pedido de amizade
+if (isset($_GET['add'])) {
+    $add_id = $_GET['add'];
+    $stmt = $conexao->prepare("INSERT IGNORE INTO amizades (usuario_id, amigo_id) VALUES (?, ?)");
+    $stmt->execute([$usuario_id, $add_id]);
+    header("Location: perfil.php");
+    exit;
+}
+
+// Aceitar pedido de amizade
+if (isset($_GET['aceitar'])) {
+    $aceitar_id = $_GET['aceitar'];
+    $stmt = $conexao->prepare("UPDATE amizades SET status='aceito' WHERE usuario_id=? AND amigo_id=?");
+    $stmt->execute([$aceitar_id, $usuario_id]);
+    header("Location: perfil.php");
+    exit;
+}
+
+// Pedidos pendentes recebidos
+$stmt = $conexao->prepare("
+    SELECT u.* FROM users u
+    JOIN amizades a ON a.usuario_id = u.id
+    WHERE a.amigo_id=? AND a.status='pendente'
+");
+$stmt->execute([$usuario_id]);
+$pedidos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+?>
+
+<!DOCTYPE html>
+<html lang="pt-br">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Perfil - <?php echo htmlspecialchars($user['nome']); ?></title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .gradient-bg { background: linear-gradient(135deg, #5565aeff 0%, #2f36b8ff 100%); }
-        .glass-effect { backdrop-filter: blur(10px); background: rgba(255, 255, 255, 0.1); }
-        .profile-card { transition: all 0.3s ease; }
-        .profile-card:hover { transform: translateY(-5px); }
-        .stat-card { transition: all 0.3s ease; }
-        .stat-card:hover { transform: scale(1.05); }
-        .edit-overlay { display: none; }
-        .edit-overlay.active { display: flex; }
-    </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Perfil</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet" />
+<style>
+/* RESET */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body {
+    background: #f0f2f5;
+    min-height: 100vh;
+    display: flex;
+}
+
+/* NAVBAR LATERAL */
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 70px;
+    height: 100%;
+    background: #1877f2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 20px;
+    transition: width 0.3s ease;
+    overflow: hidden;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+    z-index: 1000;
+}
+
+.sidebar:hover {
+    width: 220px;
+}
+
+.sidebar a {
+    color: #fff;
+    text-decoration: none;
+    width: 100%;
+    padding: 15px 25px;
+    display: flex;
+    align-items: center;
+    transition: background 0.2s ease;
+    border-radius: 0 25px 25px 0;
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 16px;
+}
+
+.sidebar a:hover {
+    background: rgba(255,255,255,0.2);
+}
+
+.sidebar i {
+    min-width: 30px;
+    font-size: 22px;
+    text-align: center;
+}
+
+.sidebar span {
+    margin-left: 15px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    white-space: nowrap;
+}
+
+.sidebar:hover span {
+    opacity: 1;
+}
+
+/* CONTAINER PRINCIPAL */
+.container {
+    margin-left: 90px;
+    max-width: 900px;
+    width: 100%;
+    padding: 30px 25px;
+    background: #fff;
+    border-radius: 15px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+    min-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+}
+
+/* SEÇÃO DE PERFIL */
+.profile-header {
+    display: flex;
+    align-items: center;
+    gap: 30px;
+    flex-wrap: wrap;
+}
+
+.profile-photo {
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid #1877f2;
+    box-shadow: 0 4px 15px rgba(24,119,242,0.4);
+    background: #ddd;
+}
+
+.profile-info {
+    flex: 1;
+    min-width: 250px;
+}
+
+.profile-info h2 {
+    font-size: 32px;
+    color: #1877f2;
+    margin-bottom: 10px;
+}
+
+.profile-info p.bio {
+    font-size: 16px;
+    color: #555;
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+/* FORMULÁRIO DE EDIÇÃO */
+form#editarPerfil {
+    max-width: 600px;
+    margin-top: 20px;
+}
+
+form#editarPerfil input[type="text"],
+form#editarPerfil textarea {
+    width: 100%;
+    padding: 12px 15px;
+    margin-bottom: 15px;
+    border: 1.5px solid #ccd0d5;
+    border-radius: 12px;
+    font-size: 16px;
+    transition: border-color 0.3s ease;
+    resize: vertical;
+}
+
+form#editarPerfil input[type="text"]:focus,
+form#editarPerfil textarea:focus {
+    border-color: #1877f2;
+    outline: none;
+}
+
+form#editarPerfil input[type="file"] {
+    margin-bottom: 15px;
+}
+
+form#editarPerfil button {
+    background: #1877f2;
+    color: #fff;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 30px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 18px;
+    box-shadow: 0 4px 12px rgba(24,119,242,0.6);
+    transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+form#editarPerfil button:hover {
+    background: #145db2;
+    box-shadow: 0 6px 18px rgba(21,93,178,0.8);
+}
+
+/* SEÇÕES */
+section {
+    max-width: 900px;
+}
+
+h3 {
+    color: #1877f2;
+    font-size: 24px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #1877f2;
+    padding-bottom: 6px;
+}
+
+/* LISTAS */
+ul {
+    list-style: none;
+    padding: 0;
+    max-width: 600px;
+    margin: 0 auto;
+    border-radius: 12px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+    background: #f7f9fc;
+}
+
+li {
+    padding: 15px 20px;
+    border-bottom: 1px solid #e1e4e8;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 16px;
+    color: #1c1e21;
+}
+
+li:last-child {
+    border-bottom: none;
+}
+
+ul li a {
+    background: #1877f2;
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    transition: background 0.3s ease;
+}
+
+ul li a:hover {
+    background: #145db2;
+}
+
+/* POSTS DO USUÁRIO */
+.posts-list {
+    max-width: 700px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 25px;
+}
+
+.post {
+    background: #fff;
+    border-radius: 15px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    padding: 20px;
+    transition: box-shadow 0.3s ease;
+}
+
+.post:hover {
+    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
+.post strong {
+    color: #1877f2;
+    font-size: 18px;
+    display: block;
+    margin-bottom: 12px;
+    font-weight: 700;
+}
+
+.post .conteudo {
+    font-size: 16px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    color: #1c1e21;
+    margin-bottom: 12px;
+}
+
+.post img {
+    max-width: 100%;
+    border-radius: 15px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    object-fit: cover;
+}
+
+/* Data */
+.post small {
+    color: #606770;
+    font-size: 13px;
+}
+
+/* RESPONSIVO */
+@media screen and (max-width: 900px) {
+    .container {
+        margin-left: 80px;
+        padding: 20px 15px;
+    }
+}
+
+@media screen and (max-width: 600px) {
+    body {
+        display: block;
+        padding: 10px 0;
+    }
+    .sidebar {
+        position: relative;
+        width: 100%;
+        height: auto;
+        flex-direction: row;
+        padding: 10px 0;
+        box-shadow: none;
+    }
+    .sidebar:hover {
+        width: 100%;
+    }
+    .sidebar a {
+        justify-content: center;
+        padding: 10px 15px;
+        font-size: 14px;
+    }
+    .sidebar i {
+        min-width: auto;
+        margin-right: 8px;
+    }
+    .sidebar span {
+        opacity: 1 !important;
+        margin-left: 0;
+    }
+    .container {
+        margin-left: 0;
+        max-width: 100%;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 15px 10px;
+    }
+    .profile-header {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+    .profile-info {
+        min-width: auto;
+    }
+    .posts-list {
+        max-width: 100%;
+    }
+    ul {
+        max-width: 100%;
+    }
+}
+</style>
 </head>
-<body class="gradient-bg min-h-screen">
-    <!-- Header -->
-    <nav class="glass-effect border-b border-white/20 p-4">
-        <div class="max-w-6xl mx-auto flex justify-between items-center">
-            <div class="flex items-center space-x-3">
-                <i class="fas fa-code text-white text-2xl"></i>
-                <h1 class="text-white text-xl font-bold">ConectaTech</h1>
-            </div>
-            <!-- <div class="flex items-center space-x-4">
-                <button class="text-white hover:text-blue-200 transition-colors">
-                    <i class="fas fa-bell text-lg"></i>
-                </button>
-                <button class="text-white hover:text-blue-200 transition-colors">
-                    <i class="fas fa-cog text-lg"></i>
-                </button>
-            </div> -->
-        </div>
-    </nav>
+<body>
 
-    <div class="max-w-6xl mx-auto p-6">
-        <!-- Profile Header -->
-        <div class="profile-card bg-white rounded-2xl shadow-xl p-8 mb-6">
-            <div class="flex flex-col md:flex-row items-center md:items-start space-y-6 md:space-y-0 md:space-x-8">
-                <!-- Profile Photo -->
-                <div class="relative group">
-                    <img id="profilePhoto" src="<?php echo htmlspecialchars($user['foto_perfil']); ?>" 
-                         alt="Foto de perfil" 
-                         class="w-32 h-32 md:w-40 md:h-40 object-cover rounded-full border-4 border-blue-500 shadow-lg"
-                         onerror="this.src='https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&h=300&fit=crop&crop=face';">
-                    <button onclick="changePhoto()" class="absolute inset-0 bg-black bg-opacity-50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <i class="fas fa-camera text-white text-xl"></i>
-                    </button>
-                </div>
+<!-- NAVBAR LATERAL -->
+<div class="sidebar" aria-label="Menu lateral">
+    <a href="home.php" title="Home"><i class="fas fa-home"></i><span>Home</span></a>
+    <a href="perfil.php" title="Perfil"><i class="fas fa-user"></i><span>Perfil</span></a>
+    <a href="chat.php" title="Chat"><i class="fas fa-comments"></i><span>Chat</span></a>
+    <a href="index.php" title="Sair"><i class="fas fa-sign-out-alt"></i><span>Sair</span></a>
+</div>
 
-                <!-- Profile Info -->
-                <div class="flex-1 text-center md:text-left">
-                    <div class="flex flex-col md:flex-row md:items-center md:justify-between mb-4">
-                        <div>
-                            <h2 id="userName" class="text-3xl font-bold text-gray-800 mb-2"><?php echo htmlspecialchars($user['nome']); ?></h2>
-                            <p id="userBio" class="text-gray-600 mb-3"><?php echo htmlspecialchars($user['bio'] ?? "Nenhuma bio cadastrada."); ?></p>
-                        </div>
-                        <a href="editar_perfil.php?id=<?php echo $user['id']; ?>" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg transition-colors flex items-center space-x-2 no-underline">
-                            <i class="fas fa-edit"></i>
-                            <span>Editar Perfil</span>
-                        </a>
-                    </div>
+<!-- CONTEÚDO PRINCIPAL -->
+<div class="container" role="main" aria-label="Perfil do usuário">
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
-                        <div class="flex items-center justify-center md:justify-start space-x-2">
-                            <i class="fas fa-envelope text-blue-500"></i>
-                            <span id="userEmail"><?php echo htmlspecialchars($user['email']); ?></span>
-                        </div>
-                        <div class="flex items-center justify-center md:justify-start space-x-2">
-                            <i class="fas fa-calendar text-green-500"></i>
-                            <span>Membro desde <span id="memberSince"><?php echo date("d/m/Y", strtotime($user['data_criacao'])); ?></span></span>
-                        </div>
-                        <div class="flex items-center justify-center md:justify-start space-x-2">
-                            <i class="fas fa-map-marker-alt text-red-500"></i>
-                            <span id="userLocation"><?php echo htmlspecialchars($user['localizacao'] ?? 'Não informado'); ?></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Stats Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-            <div class="stat-card bg-white rounded-xl p-6 shadow-lg text-center">
-                <div class="text-3xl font-bold text-blue-500 mb-2" id="projectsCount">12</div>
-                <div class="text-gray-600">Projetos</div>
-            </div>
-            <div class="stat-card bg-white rounded-xl p-6 shadow-lg text-center">
-                <div class="text-3xl font-bold text-green-500 mb-2" id="connectionsCount">248</div>
-                <div class="text-gray-600">Conexões</div>
-            </div>
-            <div class="stat-card bg-white rounded-xl p-6 shadow-lg text-center">
-                <div class="text-3xl font-bold text-purple-500 mb-2" id="skillsCount">15</div>
-                <div class="text-gray-600">Habilidades</div>
-            </div>
-            <div class="stat-card bg-white rounded-xl p-6 shadow-lg text-center">
-                <div class="text-3xl font-bold text-orange-500 mb-2" id="achievementsCount">8</div>
-                <div class="text-gray-600">Conquistas</div>
-            </div>
-        </div>
-
-        <!-- Content Tabs -->
-        <div class="bg-white rounded-2xl shadow-xl overflow-hidden">
-            <!-- Tab Navigation -->
-            <div class="flex border-b border-gray-200">
-                <button onclick="showTab('projects')" class="tab-btn flex-1 py-4 px-6 text-center font-medium text-blue-500 border-b-2 border-blue-500 bg-blue-50">
-                    <i class="fas fa-folder-open mr-2"></i>Projetos
-                </button>
-                <button onclick="showTab('skills')" class="tab-btn flex-1 py-4 px-6 text-center font-medium text-gray-500 hover:text-blue-500 transition-colors">
-                    <i class="fas fa-code mr-2"></i>Habilidades
-                </button>
-                <button onclick="showTab('activity')" class="tab-btn flex-1 py-4 px-6 text-center font-medium text-gray-500 hover:text-blue-500 transition-colors">
-                    <i class="fas fa-chart-line mr-2"></i>Atividade
-                </button>
-            </div>
-
-            <!-- Tab Content -->
-            <div class="p-6">
-                <!-- Projects Tab -->
-                <div id="projects-tab" class="tab-content">
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-                            <h3 class="font-semibold text-gray-800 mb-2">E-commerce Platform</h3>
-                            <p class="text-gray-600 text-sm mb-3">Plataforma completa de e-commerce com React e Node.js</p>
-                            <div class="flex justify-between items-center">
-                                <span class="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">React</span>
-                                <span class="text-xs text-gray-500">2 dias atrás</span>
-                            </div>
-                        </div>
-                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-                            <h3 class="font-semibold text-gray-800 mb-2">Task Manager App</h3>
-                            <p class="text-gray-600 text-sm mb-3">Aplicativo de gerenciamento de tarefas com Vue.js</p>
-                            <div class="flex justify-between items-center">
-                                <span class="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">Vue.js</span>
-                                <span class="text-xs text-gray-500">1 semana atrás</span>
-                            </div>
-                        </div>
-                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow">
-                            <h3 class="font-semibold text-gray-800 mb-2">API REST</h3>
-                            <p class="text-gray-600 text-sm mb-3">API robusta para sistema de autenticação</p>
-                            <div class="flex justify-between items-center">
-                                <span class="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">Node.js</span>
-                                <span class="text-xs text-gray-500">2 semanas atrás</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Skills Tab -->
-                <div id="skills-tab" class="tab-content hidden">
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div class="text-center p-4 border border-gray-200 rounded-lg">
-                            <i class="fab fa-js-square text-4xl text-yellow-500 mb-2"></i>
-                            <div class="font-medium">JavaScript</div>
-                            <div class="text-sm text-gray-500">Avançado</div>
-                        </div>
-                        <div class="text-center p-4 border border-gray-200 rounded-lg">
-                            <i class="fab fa-react text-4xl text-blue-500 mb-2"></i>
-                            <div class="font-medium">React</div>
-                            <div class="text-sm text-gray-500">Avançado</div>
-                        </div>
-                        <div class="text-center p-4 border border-gray-200 rounded-lg">
-                            <i class="fab fa-node-js text-4xl text-green-500 mb-2"></i>
-                            <div class="font-medium">Node.js</div>
-                            <div class="text-sm text-gray-500">Intermediário</div>
-                        </div>
-                        <div class="text-center p-4 border border-gray-200 rounded-lg">
-                            <i class="fas fa-database text-4xl text-gray-600 mb-2"></i>
-                            <div class="font-medium">MySQL</div>
-                            <div class="text-sm text-gray-500">Intermediário</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Activity Tab -->
-                <div id="activity-tab" class="tab-content hidden">
-                    <div class="space-y-4">
-                        <div class="flex items-center space-x-4 p-4 border-l-4 border-blue-500 bg-blue-50 rounded-r-lg">
-                            <i class="fas fa-code text-blue-500"></i>
-                            <div>
-                                <div class="font-medium">Novo commit no projeto E-commerce</div>
-                                <div class="text-sm text-gray-500">Há 2 horas</div>
-                            </div>
-                        </div>
-                        <div class="flex items-center space-x-4 p-4 border-l-4 border-green-500 bg-green-50 rounded-r-lg">
-                            <i class="fas fa-users text-green-500"></i>
-                            <div>
-                                <div class="font-medium">Nova conexão com Maria Santos</div>
-                                <div class="text-sm text-gray-500">Há 5 horas</div>
-                            </div>
-                        </div>
-                        <div class="flex items-center space-x-4 p-4 border-l-4 border-purple-500 bg-purple-50 rounded-r-lg">
-                            <i class="fas fa-trophy text-purple-500"></i>
-                            <div>
-                                <div class="font-medium">Conquista desbloqueada: 10 projetos</div>
-                                <div class="text-sm text-gray-500">Há 1 dia</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    <!-- Cabeçalho do perfil -->
+    <div class="profile-header">
+        <img src="<?= !empty($usuario['foto_perfil']) ? 'uploads/perfis/' . htmlspecialchars($usuario['foto_perfil']) : 'https://via.placeholder.com/140?text=Sem+Foto' ?>" alt="Foto de perfil de <?= htmlspecialchars($usuario['nome']) ?>" class="profile-photo" />
+        <div class="profile-info">
+            <h2><?= htmlspecialchars($usuario['nome']) ?></h2>
+            <p class="bio"><?= nl2br(htmlspecialchars($usuario['bio'])) ?></p>
         </div>
     </div>
 
-    <!-- Edit Profile Modal -->
-    <div id="editOverlay" class="edit-overlay fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
-        <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4">
-            <h3 class="text-2xl font-bold mb-6">Editar Perfil</h3>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Nome</label>
-                    <input id="editName" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Bio</label>
-                    <textarea id="editBio" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Localização</label>
-                    <input id="editLocation" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                </div>
+    <!-- Formulário para editar perfil -->
+    <form id="editarPerfil" method="post" enctype="multipart/form-data" aria-label="Formulário para editar perfil">
+        <input type="text" name="nome" value="<?= htmlspecialchars($usuario['nome']) ?>" placeholder="Nome" aria-required="true" />
+        <textarea name="bio" placeholder="Bio" rows="4" aria-label="Biografia do usuário"><?= htmlspecialchars($usuario['bio']) ?></textarea>
+        <label for="foto_perfil" style="display:block; margin-bottom:8px; font-weight:600; color:#1877f2; cursor:pointer;">
+            <i class="fas fa-camera"></i> Alterar foto de perfil
+        </label>
+        <input type="file" name="foto_perfil" id="foto_perfil" accept="image/*" style="display:none;" />
+        <button type="submit" name="editar" aria-label="Salvar alterações no perfil">Salvar</button>
+    </form>
+
+    <!-- Amigos -->
+    <section aria-label="Lista de amigos">
+        <h3>Amigos</h3>
+        <?php if (count($amigos) === 0): ?>
+            <p style="text-align:center; color:#606770;">Você não tem amigos adicionados.</p>
+        <?php else: ?>
+            <ul>
+                <?php foreach($amigos as $a): ?>
+                    <li><?= htmlspecialchars($a['nome']) ?></li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </section>
+
+    <!-- Pedidos de amizade -->
+    <section aria-label="Pedidos de amizade pendentes">
+        <h3>Pedidos de amizade</h3>
+        <?php if (count($pedidos) === 0): ?>
+            <p style="text-align:center; color:#606770;">Nenhum pedido pendente.</p>
+        <?php else: ?>
+            <ul>
+                <?php foreach($pedidos as $p): ?>
+                    <li>
+                        <?= htmlspecialchars($p['nome']) ?>
+                        <a href="?aceitar=<?= $p['id'] ?>" aria-label="Aceitar pedido de amizade de <?= htmlspecialchars($p['nome']) ?>">Aceitar</a>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </section>
+
+    <!-- Pesquisa de usuários -->
+    <section aria-label="Pesquisar usuários">
+        <h3>Procurar usuários</h3>
+        <form method="get" aria-label="Formulário de pesquisa de usuários" style="max-width:600px; margin:0 auto 20px;">
+            <input type="text" name="search" value="<?= htmlspecialchars($pesquisa) ?>" placeholder="Digite o nome" aria-label="Campo para pesquisa de usuários" />
+            <button type="submit" aria-label="Pesquisar usuários">Pesquisar</button>
+        </form>
+
+        <?php if (count($resultados) === 0 && $pesquisa !== ''): ?>
+            <p style="text-align:center; color:#606770;">Nenhum usuário encontrado para "<?= htmlspecialchars($pesquisa) ?>"</p>
+        <?php elseif (count($resultados) > 0): ?>
+            <ul style="max-width:600px; margin:0 auto;">
+                <?php foreach($resultados as $r): ?>
+                    <li>
+                        <?= htmlspecialchars($r['nome']) ?>
+                        <a href="?add=<?= $r['id'] ?>" aria-label="Enviar pedido de amizade para <?= htmlspecialchars($r['nome']) ?>">Adicionar</a>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </section>
+
+    <!-- Posts do usuário -->
+    <section aria-label="Posts do usuário">
+        <h3>Meus Posts</h3>
+        <?php if (count($posts) === 0): ?>
+            <p style="text-align:center; color:#606770;">Você ainda não publicou nenhum post.</p>
+        <?php else: ?>
+            <div class="posts-list">
+                <?php foreach ($posts as $post): ?>
+                    <article class="post" aria-label="Post publicado em <?= date('d/m/Y H:i', strtotime($post['data_postagem'])) ?>">
+                        <strong><?= htmlspecialchars($usuario['nome']) ?></strong>
+                        <div class="conteudo"><?= nl2br(htmlspecialchars($post['descricao'])) ?></div>
+                        <?php if (!empty($post['imagem'])): ?>
+                            <img src="uploads/<?= htmlspecialchars($post['imagem']) ?>" alt="Imagem do post" />
+                        <?php endif; ?>
+                        <small>Postado em <?= date('d/m/Y H:i', strtotime($post['data_postagem'])) ?></small>
+                    </article>
+                <?php endforeach; ?>
             </div>
-            <div class="flex space-x-4 mt-6">
-                <button onclick="saveProfile()" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-lg transition-colors">
-                    Salvar
-                </button>
-                <button onclick="toggleEditMode()" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-700 py-2 px-4 rounded-lg transition-colors">
-                    Cancelar
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // User data from PHP database
-        let userData = {
-            name: "<?php echo htmlspecialchars($user['nome']); ?>",
-            bio: "<?php echo htmlspecialchars($user['bio'] ?? 'Nenhuma bio cadastrada.'); ?>",
-            email: "<?php echo htmlspecialchars($user['email']); ?>",
-            location: "<?php echo htmlspecialchars($user['localizacao'] ?? 'Não informado'); ?>",
-            memberSince: "<?php echo date('d/m/Y', strtotime($user['data_criacao'])); ?>",
-            photo: "<?php echo htmlspecialchars($user['foto_perfil']); ?>",
-            id: <?php echo $user['id']; ?>
-        };
-
-        // Tab functionality
-        function showTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.add('hidden');
-            });
-            
-            // Remove active state from all buttons
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.remove('text-blue-500', 'border-b-2', 'border-blue-500', 'bg-blue-50');
-                btn.classList.add('text-gray-500');
-            });
-            
-            // Show selected tab
-            document.getElementById(tabName + '-tab').classList.remove('hidden');
-            
-            // Add active state to clicked button
-            event.target.classList.add('text-blue-500', 'border-b-2', 'border-blue-500', 'bg-blue-50');
-            event.target.classList.remove('text-gray-500');
-        }
-
-        // Edit profile functionality
-        function toggleEditMode() {
-            const overlay = document.getElementById('editOverlay');
-            overlay.classList.toggle('active');
-            
-            if (overlay.classList.contains('active')) {
-                // Populate form with current data
-                document.getElementById('editName').value = userData.name;
-                document.getElementById('editBio').value = userData.bio;
-                document.getElementById('editLocation').value = userData.location;
-            }
-        }
-
-        function saveProfile() {
-            // Get form values
-            userData.name = document.getElementById('editName').value;
-            userData.bio = document.getElementById('editBio').value;
-            userData.location = document.getElementById('editLocation').value;
-            
-            // Update UI
-            document.getElementById('userName').textContent = userData.name;
-            document.getElementById('userBio').textContent = userData.bio;
-            document.getElementById('userLocation').textContent = userData.location;
-            
-            // Close modal
-            toggleEditMode();
-            
-            // Show success message
-            showNotification('Perfil atualizado com sucesso!', 'success');
-        }
-
-        function changePhoto() {
-            const photos = [
-                "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&h=300&fit=crop&crop=face",
-                "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=300&h=300&fit=crop&crop=face",
-                "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300&h=300&fit=crop&crop=face",
-                "https://images.unsplash.com/photo-1519244703995-f4e0f30006d5?w=300&h=300&fit=crop&crop=face"
-            ];
-            
-            const currentPhoto = document.getElementById('profilePhoto').src;
-            let newPhoto;
-            
-            do {
-                newPhoto = photos[Math.floor(Math.random() * photos.length)];
-            } while (newPhoto === currentPhoto);
-            
-            document.getElementById('profilePhoto').src = newPhoto;
-            userData.photo = newPhoto;
-            
-            showNotification('Foto de perfil atualizada!', 'success');
-        }
-
-        function showNotification(message, type) {
-            const notification = document.createElement('div');
-            notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg text-white z-50 ${type === 'success' ? 'bg-green-500' : 'bg-red-500'}`;
-            notification.textContent = message;
-            
-            document.body.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.remove();
-            }, 3000);
-        }
-
-        // Animate stats on load
-        function animateStats() {
-            const stats = [
-                { id: 'projectsCount', target: 12 },
-                { id: 'connectionsCount', target: 248 },
-                { id: 'skillsCount', target: 15 },
-                { id: 'achievementsCount', target: 8 }
-            ];
-            
-            stats.forEach(stat => {
-                let current = 0;
-                const increment = stat.target / 50;
-                const timer = setInterval(() => {
-                    current += increment;
-                    if (current >= stat.target) {
-                        current = stat.target;
-                        clearInterval(timer);
-                    }
-                    document.getElementById(stat.id).textContent = Math.floor(current);
-                }, 30);
-            });
-        }
-
-        // Initialize page
-        document.addEventListener('DOMContentLoaded', function() {
-            animateStats();
-        });
-    </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'980134a10049d97a',t:'MTc1ODAzNDUzNC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
-</html>
-
-
+        <?php endif; ?>
